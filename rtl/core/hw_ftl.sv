@@ -167,12 +167,21 @@ module hw_ftl #(
         computed_crc = calc_crc32(raw_journal_data);
 
         // Atomic journal write
-        journal_banks[~journal_bank].magic <= JOURNAL_MAGIC;
-        journal_banks[~journal_bank].seq   <= next_seq;
-        journal_banks[~journal_bank].pfn   <= alloc_pfn;
-        journal_banks[~journal_bank].block <= BLOCK_ADDR_W'(active_blk_idx);
-        journal_banks[~journal_bank].page  <= active_page_idx;
-        journal_banks[~journal_bank].crc   <= computed_crc;
+        if (journal_bank == 1'b0) begin
+          journal_banks[1].magic <= JOURNAL_MAGIC;
+          journal_banks[1].seq   <= next_seq;
+          journal_banks[1].pfn   <= alloc_pfn;
+          journal_banks[1].block <= BLOCK_ADDR_W'(active_blk_idx);
+          journal_banks[1].page  <= active_page_idx;
+          journal_banks[1].crc   <= computed_crc;
+        end else begin
+          journal_banks[0].magic <= JOURNAL_MAGIC;
+          journal_banks[0].seq   <= next_seq;
+          journal_banks[0].pfn   <= alloc_pfn;
+          journal_banks[0].block <= BLOCK_ADDR_W'(active_blk_idx);
+          journal_banks[0].page  <= active_page_idx;
+          journal_banks[0].crc   <= computed_crc;
+        end
 
         journal_seq     <= next_seq;
         journal_bank    <= ~journal_bank;
