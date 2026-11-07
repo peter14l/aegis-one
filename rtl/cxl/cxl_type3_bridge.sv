@@ -102,25 +102,47 @@ module cxl_type3_bridge #(
   assign m_axi_arburst = 2'b01;      // INCR
   assign m_axi_arvalid = is_read && (tag_count < 5'd16);
 
+  logic aw_done, w_done;
+  wire aw_fire = m_axi_awvalid && m_axi_awready;
+  wire w_fire  = m_axi_wvalid  && m_axi_wready;
+
+  always_ff @(posedge clk) begin
+    if (!rst_n) begin
+      aw_done <= 1'b0;
+      w_done  <= 1'b0;
+    end else if (is_write) begin
+      if (m2s_rdy) begin
+        aw_done <= 1'b0;
+        w_done  <= 1'b0;
+      end else begin
+        if (aw_fire) aw_done <= 1'b1;
+        if (w_fire)  w_done  <= 1'b1;
+      end
+    end else begin
+      aw_done <= 1'b0;
+      w_done  <= 1'b0;
+    end
+  end
+
   // AXI Write Channel Driving
   assign m_axi_awid    = 8'd0;
   assign m_axi_awaddr  = m2s_addr;
   assign m_axi_awlen   = 8'd0;       // Single 64B beat
   assign m_axi_awsize  = 3'b110;     // 64 bytes
   assign m_axi_awburst = 2'b01;
-  assign m_axi_awvalid = is_write;
+  assign m_axi_awvalid = is_write && !aw_done;
 
   assign m_axi_wdata   = m2s_data;
   assign m_axi_wstrb   = m2s_strb;
   assign m_axi_wlast   = 1'b1;
-  assign m_axi_wvalid  = is_write;
+  assign m_axi_wvalid  = is_write && !w_done;
 
   // Ready generation back to CXL M2S bus
   always_comb begin
     if (is_read) begin
       m2s_rdy = m_axi_arready && (tag_count < 5'd16);
     end else if (is_write) begin
-      m2s_rdy = m_axi_awready && m_axi_wready;
+      m2s_rdy = (aw_done || aw_fire) && (w_done || w_fire);
     end else begin
       m2s_rdy = 1'b1;
     end

@@ -11,9 +11,14 @@ SIM_BUILD ?= /dev/shm/cocotb_build
 COCOTB_CONFIG ?= $(shell which cocotb-config 2>/dev/null || echo $(HOME)/.local/bin/cocotb-config)
 
 VERILOG_SOURCES += $(PWD)/../../docs/01_INTERFACES.sv
+VERILOG_SOURCES += $(PWD)/../../rtl/core/cdc_sync_bit.sv
+VERILOG_SOURCES += $(PWD)/../../rtl/core/cdc_async_fifo.sv
+VERILOG_SOURCES += $(PWD)/../../rtl/core/axi4_slave_adapter.sv
 VERILOG_SOURCES += $(PWD)/../../rtl/core/tag_directory.sv
 VERILOG_SOURCES += $(PWD)/../../rtl/core/write_coalescing_buffer.sv
+VERILOG_SOURCES += $(PWD)/../../rtl/core/hw_ftl.sv
 VERILOG_SOURCES += $(PWD)/../../rtl/core/ftl_engine.sv
+VERILOG_SOURCES += $(PWD)/../../rtl/core/lz4_parallel_dec.sv
 VERILOG_SOURCES += $(PWD)/../../rtl/core/lz4_decompressor.sv
 VERILOG_SOURCES += $(PWD)/../../rtl/core/migration_controller.sv
 VERILOG_SOURCES += $(PWD)/../../rtl/aegis_top.sv

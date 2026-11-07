@@ -8,3 +8,4 @@ sim_build/
 *.fst
 *.log
 obj_dir/
+benchmark_report.txt

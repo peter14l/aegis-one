@@ -28,7 +28,7 @@ jobs:
           echo "Linting RTL files: ${RTL_FILES[@]}"
           verilator --lint-only -Wall -Wno-MULTITOP --timing -Mdir /dev/shm/vlint "${RTL_FILES[@]}"
 
-      - name: Step 2A - Aegis-One Top Simulation (tb_top.cpp)
+      - name: Step 2A - LLM KV-Cache & Hybrid Tiering Benchmark (tb_top.cpp)
         run: |
           mkdir -p /dev/shm/vbuild
           shopt -s globstar nullglob
@@ -36,7 +36,9 @@ jobs:
             -Mdir /dev/shm/vbuild \
             --top-module aegis_top \
             docs/01_INTERFACES.sv rtl/**/*.sv tb/tb_top.cpp
-          /dev/shm/vbuild/Vaegis_top
+          cd /dev/shm/vbuild
+          ./Vaegis_top
+          cp benchmark_report.txt "$GITHUB_WORKSPACE/benchmark_report.txt"
 
       - name: Step 2B - CXL Type 3 Bridge Simulation (tb_cxl_bridge.cpp)
         run: |
@@ -68,4 +70,22 @@ jobs:
       - name: Step 3 - Yosys UltraScale+ Synthesis & Formal Check
         run: |
           echo "Running Yosys UltraScale+ gate-level synthesis..."
-          yosys -p "read_verilog -sv docs/01_INTERFACES.sv rtl/core/*.sv rtl/*.sv; synth_xilinx -family xcup -top aegis_top; check -assert; stat"
+          yosys -p "
+            read_verilog -sv docs/01_INTERFACES.sv rtl/core/*.sv rtl/*.sv;
+            synth_xilinx -family xcup -top aegis_top;
+            check -assert;
+            stat;
+          " > /dev/shm/synth_stat.txt 2>&1
+          cat /dev/shm/synth_stat.txt | grep -A 25 "=== aegis_top ===" || true
+          echo "" >> "$GITHUB_WORKSPACE/benchmark_report.txt"
+          echo "============================================================" >> "$GITHUB_WORKSPACE/benchmark_report.txt"
+          echo "         YOSYS ULTRASCALE+ RESOURCE UTILIZATION            " >> "$GITHUB_WORKSPACE/benchmark_report.txt"
+          echo "============================================================" >> "$GITHUB_WORKSPACE/benchmark_report.txt"
+          tail -n 35 /dev/shm/synth_stat.txt >> "$GITHUB_WORKSPACE/benchmark_report.txt"
+
+      - name: Upload Benchmark & Resource Artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: benchmark_report
+          path: benchmark_report.txt

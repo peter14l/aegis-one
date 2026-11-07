@@ -48,16 +48,22 @@ async def axi_write_beat(dut, addr, data_val, awid=1):
     dut.s_axi_wlast.value = 1
     dut.s_axi_wvalid.value = 1
 
-    while True:
+    aw_done = False
+    w_done = False
+    for _ in range(50):
+        if not aw_done and dut.s_axi_awready.value == 1:
+            aw_done = True
+        if not w_done and dut.s_axi_wready.value == 1:
+            w_done = True
         await RisingEdge(dut.clk)
-        if dut.s_axi_awready.value == 1 and dut.s_axi_wready.value == 1:
+        if aw_done and w_done:
             break
 
     dut.s_axi_awvalid.value = 0
     dut.s_axi_wvalid.value = 0
 
     # Wait for write response
-    while True:
+    for _ in range(50):
         await RisingEdge(dut.clk)
         if dut.s_axi_bvalid.value == 1 and dut.s_axi_bready.value == 1:
             assert dut.s_axi_bresp.value == 0, f"Expected OKAY bresp (0), got {dut.s_axi_bresp.value}"
@@ -143,3 +149,57 @@ async def test_random_burst_traffic(dut):
     total_hits = int(dut.hit_count.value)
     total_misses = int(dut.miss_count.value)
     dut._log.info(f"[COCOTB TEST 3 PASSED] Telemetry counters -> Hits: {total_hits}, Misses: {total_misses}")
+
+@cocotb.test()
+async def test_wvalid_before_awvalid(dut):
+    """Verifies that WVALID arriving cycles before AWVALID does not deadlock."""
+    cocotb.start_soon(Clock(dut.clk, 2.5, unit="ns").start())
+    await reset_dut(dut)
+
+    test_addr = 0x0000000000034040
+    test_data = 0xCAFEBABE12345678
+
+    dut._log.info("[COCOTB TEST 4] Asserting WVALID 4 cycles before AWVALID...")
+    await RisingEdge(dut.clk)
+    dut.s_axi_wdata.value = test_data
+    dut.s_axi_wstrb.value = (1 << 64) - 1
+    dut.s_axi_wlast.value = 1
+    dut.s_axi_wvalid.value = 1
+    dut.s_axi_awvalid.value = 0
+
+    # Wait for W data to be accepted by decoupled buffer
+    while True:
+        await RisingEdge(dut.clk)
+        if dut.s_axi_wready.value == 1:
+            break
+    dut.s_axi_wvalid.value = 0
+
+    # Idle cycles between W and AW
+    await ClockCycles(dut.clk, 4)
+
+    # Now assert AWVALID
+    dut.s_axi_awid.value = 7
+    dut.s_axi_awaddr.value = test_addr
+    dut.s_axi_awlen.value = 0
+    dut.s_axi_awsize.value = 6
+    dut.s_axi_awburst.value = 1
+    dut.s_axi_awvalid.value = 1
+
+    while True:
+        await RisingEdge(dut.clk)
+        if dut.s_axi_awready.value == 1:
+            break
+    dut.s_axi_awvalid.value = 0
+
+    # Wait for BVALID
+    while True:
+        await RisingEdge(dut.clk)
+        if dut.s_axi_bvalid.value == 1 and dut.s_axi_bready.value == 1:
+            assert dut.s_axi_bresp.value == 0, "Expected OKAY bresp"
+            assert dut.s_axi_bid.value == 7, "Expected BID == 7"
+            break
+
+    # Verify that the address now hits in Tier-0 cache
+    hit = await axi_read_check(dut, test_addr)
+    assert hit, "Expected cache hit after out-of-order WVALID-then-AWVALID write!"
+    dut._log.info("[COCOTB TEST 4 PASSED] Out-of-order WVALID-before-AWVALID verified with zero deadlocks.")
