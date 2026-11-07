@@ -123,6 +123,7 @@ module tag_directory #(
   // --------------------------------------------------------------------------
   // PLRU Next-State Calculation Function
   // --------------------------------------------------------------------------
+  /* verilator lint_off BLKSEQ */
   function [2:0] plru_touch;
     input [2:0] cur;
     input [WAY_W-1:0] way;
