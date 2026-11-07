@@ -1,0 +1,52 @@
+name: FPGA Synthesis & RTL Verification
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  verify:
+    name: Verilator Lint, Sim & Yosys Synthesis
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install Toolchain (Verilator & Yosys)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y verilator yosys
+
+      - name: Step 1 - Verilator Lint Check
+        run: |
+          mkdir -p /dev/shm/vlint
+          shopt -s globstar nullglob
+          RTL_FILES=(docs/01_INTERFACES.sv rtl/**/*.sv)
+          echo "Linting RTL files: ${RTL_FILES[@]}"
+          verilator --lint-only -Wall -Wno-MULTITOP --timing -Mdir /dev/shm/vlint "${RTL_FILES[@]}"
+
+      - name: Step 2 - Cycle-Accurate Simulation (tb_top.cpp)
+        run: |
+          if [ -f "tb/tb_top.cpp" ]; then
+            echo "Running cycle-accurate testbench regression..."
+            mkdir -p /dev/shm/vbuild
+            shopt -s globstar nullglob
+            verilator --cc --exe -O3 --build -j $(nproc) \
+              -Mdir /dev/shm/vbuild \
+              --top-module aegis_top \
+              docs/01_INTERFACES.sv rtl/**/*.sv tb/tb_top.cpp
+            /dev/shm/vbuild/Vaegis_top
+          else
+            echo "tb/tb_top.cpp not yet present. Skipping simulation."
+          fi
+
+      - name: Step 3 - Yosys UltraScale+ Synthesis & Formal Check
+        run: |
+          if [ -f "rtl/aegis_top.sv" ]; then
+            echo "Running Yosys UltraScale+ gate-level synthesis..."
+            yosys -p "read_verilog -sv docs/01_INTERFACES.sv rtl/*.sv rtl/core/*.sv; synth_xilinx -family xcup -top aegis_top; check -assert"
+          else
+            echo "rtl/aegis_top.sv not yet present. Skipping UltraScale+ synthesis."
+          fi
