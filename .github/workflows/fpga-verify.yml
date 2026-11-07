@@ -14,10 +14,11 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Install Toolchain (Verilator & Yosys)
+      - name: Install Toolchain (Verilator, Yosys, Python Dev)
         run: |
           sudo apt-get update
-          sudo apt-get install -y verilator yosys
+          sudo apt-get install -y verilator yosys python3-dev python3-pip
+          python3 -m pip install cocotb pytest --break-system-packages
 
       - name: Step 1 - Verilator Lint Check
         run: |
@@ -27,26 +28,34 @@ jobs:
           echo "Linting RTL files: ${RTL_FILES[@]}"
           verilator --lint-only -Wall -Wno-MULTITOP --timing -Mdir /dev/shm/vlint "${RTL_FILES[@]}"
 
-      - name: Step 2 - Cycle-Accurate Simulation (tb_top.cpp)
+      - name: Step 2A - Aegis-One Top Simulation (tb_top.cpp)
         run: |
-          if [ -f "tb/tb_top.cpp" ]; then
-            echo "Running cycle-accurate testbench regression..."
-            mkdir -p /dev/shm/vbuild
-            shopt -s globstar nullglob
-            verilator --cc --exe -O3 --build -j $(nproc) \
-              -Mdir /dev/shm/vbuild \
-              --top-module aegis_top \
-              docs/01_INTERFACES.sv rtl/**/*.sv tb/tb_top.cpp
-            /dev/shm/vbuild/Vaegis_top
-          else
-            echo "tb/tb_top.cpp not yet present. Skipping simulation."
-          fi
+          mkdir -p /dev/shm/vbuild
+          shopt -s globstar nullglob
+          verilator --cc --exe -O3 --build -j $(nproc) \
+            -Mdir /dev/shm/vbuild \
+            --top-module aegis_top \
+            docs/01_INTERFACES.sv rtl/**/*.sv tb/tb_top.cpp
+          /dev/shm/vbuild/Vaegis_top
+
+      - name: Step 2B - CXL Type 3 Bridge Simulation (tb_cxl_bridge.cpp)
+        run: |
+          mkdir -p /dev/shm/vcxl
+          verilator --cc --exe -O3 --build -j $(nproc) \
+            -Wall -Wno-MULTITOP \
+            -Mdir /dev/shm/vcxl \
+            --top-module cxl_type3_bridge \
+            rtl/cxl/cxl_type3_bridge.sv tb/tb_cxl_bridge.cpp
+          /dev/shm/vcxl/Vcxl_type3_bridge
+
+      - name: Step 2C - Cocotb Constrained-Random Regression
+        run: |
+          export PATH=$HOME/.local/bin:$PATH
+          cd tb/cocotb
+          make clean
+          make SIM_BUILD=/dev/shm/cocotb_build -j $(nproc)
 
       - name: Step 3 - Yosys UltraScale+ Synthesis & Formal Check
         run: |
-          if [ -f "rtl/aegis_top.sv" ]; then
-            echo "Running Yosys UltraScale+ gate-level synthesis..."
-            yosys -p "read_verilog -sv docs/01_INTERFACES.sv rtl/*.sv rtl/core/*.sv; synth_xilinx -family xcup -top aegis_top; check -assert"
-          else
-            echo "rtl/aegis_top.sv not yet present. Skipping UltraScale+ synthesis."
-          fi
+          echo "Running Yosys UltraScale+ gate-level synthesis..."
+          yosys -p "read_verilog -sv docs/01_INTERFACES.sv rtl/core/*.sv rtl/*.sv; synth_xilinx -family xcup -top aegis_top; check -assert; stat"

@@ -50,7 +50,12 @@ This document contains in-depth silicon engineering details, protocol breakdowns
 - **Atomic Journaling**: Dual-bank ping-pong journal with monotonic sequence numbers for transaction consistency.
 - **Wear Leveling**: Dedicated per-block erase cycle counter array.
 
-### 2.5 CXL Type 3 Protocol Adapter (`rtl/cxl/cxl_type3_bridge.sv`)
+### 2.5 Hardware Migration Controller (`rtl/core/migration_controller.sv`)
+- **Function**: Coordinates autonomous page movements between Tier-0 DRAM cache and Tier-1 ONFI 4.2 NAND.
+- **Miss Flow**: Host miss -> FTL translation lookup -> ONFI command issue -> LZ4 8-lane parallel decompression -> Tier-0 DRAM cache refill -> BRAM Tag Directory refresh.
+- **Eviction Flow**: Dirty page eviction / WCB drain -> FTL block/page allocation -> ONFI Page Program -> wear-level counter update.
+
+### 2.6 CXL Type 3 Protocol Adapter (`rtl/cxl/cxl_type3_bridge.sv`)
 - **Protocol**: CXL.mem M2S (Master to Subordinate) and S2M (Subordinate to Master).
 - **Flit Conversion**: Translates `MemRd` and `MemWr` into standard 512-bit AXI4-MM transactions with 16-entry tag tracking FIFO.
 
@@ -58,12 +63,12 @@ This document contains in-depth silicon engineering details, protocol breakdowns
 
 ## 3. FPGA Resource Utilization (Xilinx UltraScale+ `xcup`)
 
-Synthesized with Yosys Open SYnthesis Suite (`synth_xilinx -family xcup -top aegis_top`):
+Synthesized with Yosys Open Synthesis Suite (`synth_xilinx -family xcup -top aegis_top`):
 
 | Primitive | Quantity | Purpose |
 | :--- | :---: | :--- |
 | **RAMB36E2** | 9 | Tag Directory, Write Buffer, LZ4 History |
 | **RAM64M8** | 10 | FTL Wear Counters & L2P LUTRAM |
-| **FDRE / Registers** | 2,709 | Pipeline registers, FSMs, telemetry |
-| **LUT (LUT1–LUT6)** | 6,207 | Hit detection, priority encoders, muxes |
-| **CARRY4** | 72 | Arithmetic counters and age timers |
+| **FDRE / Registers** | 3,070 | Pipeline registers, FSMs, telemetry |
+| **LUT (LUT1–LUT6)** | 7,194 | Hit detection, priority encoders, muxes |
+| **CARRY4** | 107 | Arithmetic counters and age timers |

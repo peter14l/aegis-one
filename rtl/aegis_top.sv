@@ -3,15 +3,16 @@
 // Project: Aegis-One Hyper-Hybrid Tiered Memory Controller
 // Standard: IEEE 1800-2017 SystemVerilog
 // Description: Top-Level Memory Controller IP integrating Host AXI4-MM,
-//              BRAM Tag Directory, Write-Coalescing Buffer, LZ4 Engine, FTL
+//              Tag Directory, Write Buffer, LZ4 Decompressor, FTL, Migration
 // ============================================================================
-
-/* verilator lint_off UNUSEDPARAM */
 
 `ifndef AEGIS_TOP_SV
 `define AEGIS_TOP_SV
 
 `timescale 1ns / 1ps
+
+/* verilator lint_off UNUSEDPARAM */
+/* verilator lint_off PINCONNECTEMPTY */
 
 module aegis_top #(
   parameter int unsigned ADDR_W = 64,
@@ -22,9 +23,7 @@ module aegis_top #(
   input  logic                      clk,
   input  logic                      rst_n,
 
-  // --------------------------------------------------------------------------
   // Host AXI4-MM Slave Interface
-  // --------------------------------------------------------------------------
   input  logic [ID_W-1:0]           s_axi_awid,
   input  logic [ADDR_W-1:0]         s_axi_awaddr,
   input  logic [7:0]                s_axi_awlen,
@@ -32,18 +31,15 @@ module aegis_top #(
   input  logic [1:0]                s_axi_awburst,
   input  logic                      s_axi_awvalid,
   output logic                      s_axi_awready,
-
   input  logic [DATA_W-1:0]         s_axi_wdata,
   input  logic [STRB_W-1:0]         s_axi_wstrb,
   input  logic                      s_axi_wlast,
   input  logic                      s_axi_wvalid,
   output logic                      s_axi_wready,
-
   output logic [ID_W-1:0]           s_axi_bid,
   output logic [1:0]                s_axi_bresp,
   output logic                      s_axi_bvalid,
   input  logic                      s_axi_bready,
-
   input  logic [ID_W-1:0]           s_axi_arid,
   input  logic [ADDR_W-1:0]         s_axi_araddr,
   input  logic [7:0]                s_axi_arlen,
@@ -51,7 +47,6 @@ module aegis_top #(
   input  logic [1:0]                s_axi_arburst,
   input  logic                      s_axi_arvalid,
   output logic                      s_axi_arready,
-
   output logic [ID_W-1:0]           s_axi_rid,
   output logic [DATA_W-1:0]         s_axi_rdata,
   output logic [1:0]                s_axi_rresp,
@@ -59,9 +54,7 @@ module aegis_top #(
   output logic                      s_axi_rvalid,
   input  logic                      s_axi_rready,
 
-  // --------------------------------------------------------------------------
   // Tier-0 DRAM AXI4-MM Master Interface
-  // --------------------------------------------------------------------------
   output logic [ID_W-1:0]           m_t0_arid,
   output logic [ADDR_W-1:0]         m_t0_araddr,
   output logic [7:0]                m_t0_arlen,
@@ -69,7 +62,6 @@ module aegis_top #(
   output logic [1:0]                m_t0_arburst,
   output logic                      m_t0_arvalid,
   input  logic                      m_t0_arready,
-
   input  logic [ID_W-1:0]           m_t0_rid,
   input  logic [DATA_W-1:0]         m_t0_rdata,
   input  logic [1:0]                m_t0_rresp,
@@ -77,9 +69,7 @@ module aegis_top #(
   input  logic                      m_t0_rvalid,
   output logic                      m_t0_rready,
 
-  // --------------------------------------------------------------------------
   // Tier-1 ONFI 4.2 PHY Controller Interface
-  // --------------------------------------------------------------------------
   output logic [7:0]                onfi_dq_out,
   input  logic [7:0]                onfi_dq_in,
   output logic                      onfi_dq_oe,
@@ -99,8 +89,8 @@ module aegis_top #(
   output logic [31:0]               miss_count
 );
 
-  localparam int unsigned HOST_PFN_W = ADDR_W - 12; // 52 bits
-  localparam int unsigned LINE_IDX_W = 6;           // 64 lines/page
+  localparam int unsigned HOST_PFN_W = ADDR_W - 12;
+  localparam int unsigned LINE_IDX_W = 6;
 
   wire [HOST_PFN_W-1:0] host_ar_pfn  = s_axi_araddr[ADDR_W-1:12];
   wire [HOST_PFN_W-1:0] host_aw_pfn  = s_axi_awaddr[ADDR_W-1:12];
@@ -120,10 +110,11 @@ module aegis_top #(
   logic        wcb_wr_val, wcb_wr_rdy, wcb_drain_val, wcb_drain_rdy, wcb_drain_last;
   logic [HOST_PFN_W-1:0] wcb_drain_pfn;
   logic [LINE_IDX_W-1:0] wcb_drain_line_idx;
-  logic [DATA_W-1:0]    wcb_drain_data;
-  logic                 wcb_flush_done;
+  logic [DATA_W-1:0]     wcb_drain_data;
+  logic                  wcb_flush_done;
 
   logic        ftl_lookup_val, ftl_lookup_rdy, ftl_lookup_resp_val, ftl_lookup_hit;
+  logic [HOST_PFN_W-1:0] ftl_lookup_pfn, ftl_alloc_pfn;
   logic [31:0] ftl_lookup_block, ftl_alloc_block, ftl_alloc_wear_cnt, ftl_journal_seq;
   logic [15:0] ftl_lookup_page, ftl_alloc_page;
   logic        ftl_alloc_val, ftl_alloc_rdy, ftl_alloc_resp_val, ftl_journal_bank;
@@ -133,6 +124,12 @@ module aegis_top #(
   logic        lz4_decomp_rdy, lz4_decomp_last, lz4_busy, lz4_frame_error;
   logic [DATA_W-1:0] lz4_comp_data, lz4_decomp_data;
   logic [6:0]        lz4_comp_bytes_valid;
+
+  logic mig_busy, mig_tag_upd_val, t0_refill_val;
+  logic [31:0] mig_completed;
+  logic [HOST_PFN_W-1:0] mig_tag_upd_pfn, t0_refill_pfn;
+  logic [LINE_IDX_W-1:0] t0_refill_line;
+  logic [DATA_W-1:0]     t0_refill_data;
 
   // Submodules
   tag_directory #(.HOST_ADDR_W(ADDR_W), .PAGE_SIZE_B(4096), .NUM_WAYS(4), .NUM_SETS(1024), .T0_PFN_W(24)) u_tag_dir (
@@ -158,9 +155,9 @@ module aegis_top #(
 
   ftl_engine #(.HOST_ADDR_W(ADDR_W), .PAGE_SIZE_B(4096), .NUM_L2P_ENTRIES(1024), .NUM_PHYS_BLOCKS(64), .PAGES_PER_BLOCK(64)) u_ftl (
     .clk(clk), .rst_n(rst_n), .lookup_val(ftl_lookup_val), .lookup_rdy(ftl_lookup_rdy),
-    .lookup_pfn(host_ar_pfn), .lookup_resp_val(ftl_lookup_resp_val), .lookup_hit(ftl_lookup_hit),
+    .lookup_pfn(ftl_lookup_pfn), .lookup_resp_val(ftl_lookup_resp_val), .lookup_hit(ftl_lookup_hit),
     .lookup_block(ftl_lookup_block), .lookup_page(ftl_lookup_page), .alloc_val(ftl_alloc_val),
-    .alloc_rdy(ftl_alloc_rdy), .alloc_pfn(wcb_drain_pfn), .alloc_resp_val(ftl_alloc_resp_val),
+    .alloc_rdy(ftl_alloc_rdy), .alloc_pfn(ftl_alloc_pfn), .alloc_resp_val(ftl_alloc_resp_val),
     .alloc_block(ftl_alloc_block), .alloc_page(ftl_alloc_page), .alloc_wear_cnt(ftl_alloc_wear_cnt),
     .wear_query_idx(6'd0), .wear_query_count(ftl_wear_query_count), .journal_bank(ftl_journal_bank), .journal_seq(ftl_journal_seq)
   );
@@ -170,6 +167,35 @@ module aegis_top #(
     .comp_data(lz4_comp_data), .comp_bytes_valid(lz4_comp_bytes_valid), .comp_last(lz4_comp_last),
     .decomp_val(lz4_decomp_val), .decomp_rdy(lz4_decomp_rdy), .decomp_data(lz4_decomp_data),
     .decomp_last(lz4_decomp_last), .busy(lz4_busy), .frame_error(lz4_frame_error)
+  );
+
+  migration_controller #(.ADDR_W(ADDR_W), .DATA_W(DATA_W), .ID_W(ID_W), .PAGE_SIZE_B(4096)) u_mig_ctrl (
+    .clk(clk), .rst_n(rst_n),
+    .miss_req_val(tag_hit_val && (!tag_hit)), .miss_req_rdy(),
+    .miss_req_pfn(host_ar_pfn), .miss_req_id(s_axi_arid),
+    .drain_req_val(wcb_drain_val), .drain_req_rdy(wcb_drain_rdy),
+    .drain_req_pfn(wcb_drain_pfn), .drain_req_line(wcb_drain_line_idx),
+    .drain_req_data(wcb_drain_data), .drain_req_last(wcb_drain_last),
+    .ftl_lookup_val(ftl_lookup_val), .ftl_lookup_rdy(ftl_lookup_rdy),
+    .ftl_lookup_pfn(ftl_lookup_pfn), .ftl_lookup_resp_val(ftl_lookup_resp_val),
+    .ftl_lookup_hit(ftl_lookup_hit), .ftl_lookup_block(ftl_lookup_block),
+    .ftl_lookup_page(ftl_lookup_page),
+    .ftl_alloc_val(ftl_alloc_val), .ftl_alloc_rdy(ftl_alloc_rdy),
+    .ftl_alloc_pfn(ftl_alloc_pfn), .ftl_alloc_resp_val(ftl_alloc_resp_val),
+    .ftl_alloc_block(ftl_alloc_block), .ftl_alloc_page(ftl_alloc_page),
+    .lz4_comp_val(lz4_comp_val), .lz4_comp_rdy(lz4_comp_rdy),
+    .lz4_comp_data(lz4_comp_data), .lz4_comp_bytes_valid(lz4_comp_bytes_valid),
+    .lz4_comp_last(lz4_comp_last), .lz4_decomp_val(lz4_decomp_val),
+    .lz4_decomp_rdy(lz4_decomp_rdy), .lz4_decomp_data(lz4_decomp_data),
+    .lz4_decomp_last(lz4_decomp_last),
+    .t0_refill_val(t0_refill_val), .t0_refill_rdy(1'b1),
+    .t0_refill_pfn(t0_refill_pfn), .t0_refill_line(t0_refill_line),
+    .t0_refill_data(t0_refill_data),
+    .tag_upd_val(mig_tag_upd_val), .tag_upd_rdy(tag_update_rdy),
+    .tag_upd_pfn(mig_tag_upd_pfn), .tag_upd_dirty(),
+    .onfi_cmd_val(), .onfi_cmd_rdy(1'b1), .onfi_cmd_is_read(),
+    .onfi_cmd_block(), .onfi_cmd_page(),
+    .busy(mig_busy), .migration_count(mig_completed)
   );
 
   // Host Write Channel
@@ -182,28 +208,24 @@ module aegis_top #(
       s_axi_bvalid <= 1'b0;
       s_axi_bid    <= '0;
       s_axi_bresp  <= 2'b00;
-    end else begin
-      if (s_axi_bvalid && s_axi_bready) begin
-        s_axi_bvalid <= 1'b0;
-      end else if (wcb_wr_val && wcb_wr_rdy) begin
-        s_axi_bvalid <= 1'b1;
-        s_axi_bid    <= s_axi_awid;
-        s_axi_bresp  <= 2'b00;
-      end
+    end else if (s_axi_bvalid && s_axi_bready) begin
+      s_axi_bvalid <= 1'b0;
+    end else if (wcb_wr_val && wcb_wr_rdy) begin
+      s_axi_bvalid <= 1'b1;
+      s_axi_bid    <= s_axi_awid;
+      s_axi_bresp  <= 2'b00;
     end
   end
 
   // Host Read Channel & Tier-0 Bypass
   assign tag_lookup_val = s_axi_arvalid;
   assign s_axi_arready  = tag_lookup_rdy;
-
   assign m_t0_arvalid   = tag_hit_val && tag_hit;
   assign m_t0_arid      = s_axi_arid;
   assign m_t0_araddr    = {28'h000_0000, tag_hit_t0_pfn, s_axi_araddr[11:0]};
   assign m_t0_arlen     = s_axi_arlen;
   assign m_t0_arsize    = s_axi_arsize;
   assign m_t0_arburst   = s_axi_arburst;
-
   assign s_axi_rvalid   = m_t0_rvalid;
   assign s_axi_rid      = m_t0_rid;
   assign s_axi_rdata    = m_t0_rdata;
@@ -213,37 +235,43 @@ module aegis_top #(
 
   // Tag Directory Updates
   always_comb begin
-    tag_update_val          = wcb_wr_val && wcb_wr_rdy;
-    tag_update_set          = host_aw_pfn[9:0];
-    tag_update_way          = 2'd0;
-    tag_update_we           = wcb_wr_val && wcb_wr_rdy;
-    tag_update_valid        = 1'b1;
-    tag_update_dirty        = 1'b1;
-    tag_update_access_count = 4'd1;
-    tag_update_t0_pfn       = 24'd0;
-    tag_update_tag          = host_aw_pfn[51:10];
-    tag_update_dirty_only   = 1'b0;
-    tag_update_dirty_val    = 1'b1;
+    if (mig_tag_upd_val) begin
+      tag_update_val          = 1'b1;
+      tag_update_set          = mig_tag_upd_pfn[9:0];
+      tag_update_way          = mig_tag_upd_pfn[11:10];
+      tag_update_we           = 1'b1;
+      tag_update_valid        = 1'b1;
+      tag_update_dirty        = 1'b0;
+      tag_update_access_count = 4'd1;
+      tag_update_t0_pfn       = mig_tag_upd_pfn[23:0];
+      tag_update_tag          = mig_tag_upd_pfn[51:10];
+      tag_update_dirty_only   = 1'b0;
+      tag_update_dirty_val    = 1'b0;
+    end else begin
+      tag_update_val          = wcb_wr_val && wcb_wr_rdy;
+      tag_update_set          = host_aw_pfn[9:0];
+      tag_update_way          = (tag_hit_val && tag_hit && (host_ar_pfn == host_aw_pfn)) ? tag_hit_way : host_aw_pfn[11:10];
+      tag_update_we           = wcb_wr_val && wcb_wr_rdy;
+      tag_update_valid        = 1'b1;
+      tag_update_dirty        = 1'b1;
+      tag_update_access_count = 4'd1;
+      tag_update_t0_pfn       = 24'd0;
+      tag_update_tag          = host_aw_pfn[51:10];
+      tag_update_dirty_only   = 1'b0;
+      tag_update_dirty_val    = 1'b1;
+    end
   end
 
-  // WCB Drain, FTL, and ONFI Ties
-  assign ftl_alloc_val        = wcb_drain_val && wcb_drain_last;
-  assign wcb_drain_rdy        = 1'b1;
-  assign ftl_lookup_val       = tag_hit_val && (!tag_hit);
-  assign onfi_dq_out          = 8'h00;
-  assign onfi_dq_oe           = 1'b0;
-  assign onfi_dqs_out         = 1'b0;
-  assign onfi_dqs_oe          = 1'b0;
-  assign onfi_cle             = 1'b0;
-  assign onfi_ale             = 1'b0;
-  assign onfi_we_n            = 1'b1;
-  assign onfi_re_n            = 1'b1;
-  assign onfi_ce_n            = 1'b1;
-  assign lz4_comp_val         = 1'b0;
-  assign lz4_comp_data        = '0;
-  assign lz4_comp_bytes_valid = 7'd0;
-  assign lz4_comp_last        = 1'b0;
-  assign lz4_decomp_rdy       = 1'b1;
+  // ONFI 4.2 PHY Direct Drives
+  assign onfi_dq_out  = 8'h00;
+  assign onfi_dq_oe   = 1'b0;
+  assign onfi_dqs_out = 1'b0;
+  assign onfi_dqs_oe  = 1'b0;
+  assign onfi_cle     = 1'b0;
+  assign onfi_ale     = 1'b0;
+  assign onfi_we_n    = 1'b1;
+  assign onfi_re_n    = 1'b1;
+  assign onfi_ce_n    = 1'b1;
 
   // Telemetry counters
   always_ff @(posedge clk) begin
@@ -252,7 +280,7 @@ module aegis_top #(
       miss_count <= '0;
       busy       <= 1'b0;
     end else begin
-      busy <= lz4_busy || wcb_drain_val;
+      busy <= lz4_busy || wcb_drain_val || mig_busy;
       if (tag_hit_val) begin
         if (tag_hit) hit_count  <= hit_count + 1'b1;
         else         miss_count <= miss_count + 1'b1;
@@ -260,20 +288,14 @@ module aegis_top #(
     end
   end
 
-  // Suppress unused signal warnings across connected interfaces
-  wire _unused = |{tag_hit_tag, tag_hit_dirty, tag_hit_way, tag_victim_way,
-                   tag_victim_val, tag_victim_dirty, tag_victim_tag,
-                   tag_victim_t0_pfn, tag_update_rdy, ftl_lookup_rdy,
-                   ftl_lookup_resp_val, ftl_lookup_hit, ftl_lookup_block,
-                   ftl_lookup_page, ftl_alloc_rdy, ftl_alloc_resp_val,
-                   ftl_alloc_block, ftl_alloc_page, ftl_alloc_wear_cnt,
-                   ftl_journal_bank, ftl_journal_seq, lz4_comp_rdy,
-                   lz4_decomp_val, lz4_decomp_data, lz4_decomp_last,
+  wire _unused = |{tag_hit_tag, tag_hit_dirty, tag_victim_way, tag_victim_val,
+                   tag_victim_dirty, tag_victim_tag, tag_victim_t0_pfn,
+                   ftl_alloc_wear_cnt, ftl_journal_bank, ftl_journal_seq,
                    lz4_frame_error, onfi_dq_in, onfi_dqs_in, onfi_rb_n,
-                   wcb_drain_pfn, wcb_drain_line_idx, wcb_drain_data,
                    wcb_flush_done, ftl_wear_query_count, s_axi_awlen,
                    s_axi_awsize, s_axi_awburst, s_axi_wlast,
-                   s_axi_awaddr[5:0], m_t0_arready};
+                   s_axi_awaddr[5:0], m_t0_arready, mig_completed,
+                   t0_refill_val, t0_refill_pfn, t0_refill_line, t0_refill_data};
 
 endmodule // aegis_top
 

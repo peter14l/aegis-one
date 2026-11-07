@@ -1,0 +1,10 @@
+# Aegis-One Git Ignore
+__pycache__/
+*.pyc
+*.pyo
+results.xml
+sim_build/
+*.vcd
+*.fst
+*.log
+obj_dir/
